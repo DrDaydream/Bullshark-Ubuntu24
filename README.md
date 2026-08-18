@@ -1,60 +1,158 @@
-# Bullshark
+# Bullshark-Ubuntu24
 
-[![build status](https://img.shields.io/github/workflow/status/asonnino/narwhal/Rust/bullshark?style=flat-square&logo=github)](https://github.com/asonnino/narwhal/actions)
-[![rustc](https://img.shields.io/badge/rustc-1.51+-blue?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![license](https://img.shields.io/badge/license-Apache-blue.svg?style=flat-square)](LICENSE)
+[![Rust](https://github.com/DrDaydream/Bullshark-Ubuntu24/actions/workflows/rust.yml/badge.svg)](https://github.com/DrDaydream/Bullshark-Ubuntu24/actions/workflows/rust.yml)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-E95420?style=flat-square&logo=ubuntu)](https://ubuntu.com/)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=flat-square)](LICENSE)
 
-This repo provides an implementation of [Bullshark](https://arxiv.org/pdf/2201.05677.pdf). The codebase has been designed to be small, efficient, and easy to benchmark and modify. It has not been designed to run in production but uses real cryptography ([dalek](https://doc.dalek.rs/ed25519_dalek)), networking ([tokio](https://docs.rs/tokio)), and storage ([rocksdb](https://docs.rs/rocksdb)).
+This repository provides an Ubuntu 24.04-compatible research implementation of [Bullshark](https://arxiv.org/pdf/2201.05677.pdf), built on the Narwhal DAG mempool. It also includes deterministic active-adversary scheduling, fallback commit/skip accounting, leader and non-leader latency statistics, and local/AWS benchmark tooling.
+
+The codebase is intended for research and benchmarking rather than production use. It uses real cryptography ([dalek](https://doc.dalek.rs/ed25519_dalek)), asynchronous networking ([Tokio](https://docs.rs/tokio)), and persistent storage ([RocksDB](https://rocksdb.org/)).
 
 ## Quick Start
-The core protocols are written in Rust, but all benchmarking scripts are written in Python and run with [Fabric](http://www.fabfile.org/).
-To deploy and benchmark a testbed of 4 nodes on your local machine, clone the repo and install the python dependencies:
-```
-$ git clone https://github.com/asonnino/narwhal.git
-$ cd narwhal/benchmark
-$ pip install -r requirements.txt
-```
-You also need to install Clang (required by rocksdb) and [tmux](https://linuxize.com/post/getting-started-with-tmux/#installing-tmux) (which runs all nodes and clients in the background). Finally, run a local benchmark using fabric:
-```
-$ fab local
-```
-This command may take a long time the first time you run it (compiling rust code in `release` mode may be slow) and you can customize a number of benchmark parameters in `fabfile.py`. When the benchmark terminates, it displays a summary of the execution similarly to the one below.
-```
+
+The protocol is implemented in Rust. Python benchmark scripts use [Fabric](https://www.fabfile.org/) to build the binaries, start local processes, collect logs, and print results.
+
+Install the Ubuntu 24.04 dependencies directly into the current user environment:
+
+~~~bash
+git clone https://github.com/DrDaydream/Bullshark-Ubuntu24.git
+cd Bullshark-Ubuntu24
+
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential cmake clang-14 libclang-14-dev curl git tmux \
+  python3 python3-pip
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+python3 -m pip install --user --break-system-packages \
+  -r benchmark/requirements.txt
+export PATH="$HOME/.local/bin:$PATH"
+~~~
+
+The local benchmark automatically detects installed LLVM versions. The following explicit environment remains useful when diagnosing RocksDB bindgen failures:
+
+~~~bash
+export LIBCLANG_PATH=/usr/lib/llvm-14/lib
+export CLANG_PATH=/usr/bin/clang-14
+export CC=/usr/bin/clang-14
+export CXX=/usr/bin/clang++-14
+export CXXFLAGS='-include cstdint'
+~~~
+
+Edit `benchmark/fabfile.py` to configure the local run:
+
+~~~python
+bench_params = {
+    'faults': 1,
+    'nodes': 4,
+    'workers': 1,
+    'rate': 50_000,
+    'tx_size': 512,
+    'duration': 20,
+}
+~~~
+
+The dynamic adversary keeps all processes online, so `faults` is a scheduling parameter rather than a count of processes to omit. Keep `nodes >= 3 * faults + 1`.
+
+Run:
+
+~~~bash
+cd benchmark
+fab local
+~~~
+
+The first execution compiles the workspace in release mode with the `benchmark` feature and may take several minutes.
+
+### Local adversary options
+
+Set `'faults': 0` in `benchmark/fabfile.py` for the baseline. With a positive `faults` value, use:
+
+~~~bash
+# Default adversarial workload: deterministic schedule and paused client
+# traffic during the selected authority's silent slots.
+BULLSHARK_ADVERSARY_SEED=42 \
+BULLSHARK_CLIENT_DURING_SILENCE=pause \
+fab local
+
+# Keep client and batch input while the selected Primary remains silent.
+BULLSHARK_ADVERSARY_SEED=42 \
+BULLSHARK_CLIENT_DURING_SILENCE=send \
+fab local
+
+# Override the wall-clock slot used by the pre-generated client schedule.
+BULLSHARK_ADVERSARY_SEED=42 \
+BULLSHARK_CLIENT_DURING_SILENCE=pause \
+BULLSHARK_CLIENT_SILENCE_SLOT_MS=200 \
+fab local
+~~~
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BULLSHARK_ADVERSARY_SEED` | `0` | Deterministic per-round schedule seed |
+| `BULLSHARK_CLIENT_DURING_SILENCE` | `pause` | Pause or preserve client input |
+| `BULLSHARK_CLIENT_SILENCE_SLOT_MS` | `max_header_delay` | Client schedule slot in milliseconds |
+
+With `faults > 0`, every round selects exactly f adversarial authorities. The round's steady leader is always selected and is therefore unavailable; the remaining f-1 authorities are selected deterministically from the seed. Silent Primaries suppress Header creation but continue receiving protocol messages.
+
+When a steady leader is unavailable, Bullshark selects a common fallback leader. A fallback requires `2f+1` causal support to commit; otherwise it is counted as skipped. The final report separates steady-state leaders, fallback leaders, fallback commits, and fallback skips.
+
+### Example output
+
+This is an actual result parsed from the repository's current 4-node, 1-fault, 20-second local benchmark logs:
+
+~~~text
 -----------------------------------------
  SUMMARY:
 -----------------------------------------
  + CONFIG:
- Faults: 0 node(s)
+ Faults: 1 node(s)
  Committee size: 4 node(s)
  Worker(s) per node: 1 worker(s)
  Collocate primary and workers: True
  Input rate: 50,000 tx/s
  Transaction size: 512 B
- Execution time: 19 s
+ Execution time: 20 s
 
  Header size: 1,000 B
- Max header delay: 1_000 ms
+ Max header delay: 200 ms
  GC depth: 50 round(s)
  Sync retry delay: 10,000 ms
  Sync retry nodes: 3 node(s)
  batch size: 500,000 B
- Max batch delay: 100 ms
+ Max batch delay: 200 ms
 
  + RESULTS:
- Consensus TPS: 46,478 tx/s
- Consensus BPS: 23,796,531 B/s
- Consensus latency: 464 ms
+ Consensus TPS: 36,201 tx/s
+ Consensus BPS: 18,534,964 B/s
+ Consensus latency: 1,021 ms
 
- End-to-end TPS: 46,149 tx/s
- End-to-end BPS: 23,628,541 B/s
- End-to-end latency: 557 ms
+ End-to-end TPS: 35,992 tx/s
+ End-to-end BPS: 18,427,858 B/s
+ End-to-end latency: 1,228 ms
+ Leader commit latency: 630 ms
+ Non-leader commit latency: 1,054 ms
+ All committed headers latency: 1,018 ms
+ Leader commit interval: 730 ms
+ Non-leader rule-order latency: 1,054 ms
+ Steady-state leader ratio: 0.00%
+ Fallback leader ratio: 100.00%
+ Fallback commit ratio: 100.00%
+ Fallback skip ratio: 0.00%
 -----------------------------------------
-```
+~~~
+
+Results vary by machine and workload. `Consensus latency` covers header creation to consensus commit, while `End-to-end latency` starts when a sampled transaction is submitted by the client.
 
 ## Next Steps
-The next step is to read the paper [Bullshark](https://arxiv.org/pdf/2201.05677.pdf). It is then recommended to have a look at the README files of the [worker](https://github.com/asonnino/narwhal/tree/bullshark/worker) and [primary](https://github.com/asonnino/narwhal/tree/bullshark/primary) crates. An additional resource to better understand the Bullshark consensus protocol is the paper [Narwhal and Tusk](https://arxiv.org/pdf/2105.11827.pdf) describing the main systems aspects behind this protocol. 
 
-The README file of the [benchmark folder](https://github.com/asonnino/narwhal/tree/bullshark/benchmark) explains how to benchmark the codebase and read benchmarks' results. It also provides a step-by-step tutorial to run benchmarks on [Amazon Web Services (AWS)](https://aws.amazon.com) accross multiple data centers (WAN).
+- Read the [Bullshark paper](https://arxiv.org/pdf/2201.05677.pdf).
+- Read [Narwhal and Tusk](https://arxiv.org/pdf/2105.11827.pdf) for the DAG mempool and system architecture.
+- See [benchmark/README.md](benchmark/README.md) for benchmark parameters and result interpretation.
+- See [README-AWS.md](README-AWS.md) for complete AWS 10/20/50-node, cross-Region, and adversary deployment instructions.
+- Inspect the [primary](primary), [worker](worker), and [consensus](consensus) crates.
 
 ## License
-This software is licensed as [Apache 2.0](LICENSE).
+
+This software is licensed under [Apache License 2.0](LICENSE).
