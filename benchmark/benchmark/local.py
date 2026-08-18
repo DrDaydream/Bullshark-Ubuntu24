@@ -7,7 +7,10 @@ from tempfile import mkdtemp
 from time import sleep
 
 from benchmark.commands import CommandMaker
-from benchmark.config import Key, LocalCommittee, NodeParameters, BenchParameters, ConfigError
+from benchmark.config import (
+    Key, LocalCommittee, NodeParameters, BenchParameters, ConfigError,
+    place_adversaries_last,
+)
 from benchmark.logs import LogParser, ParseError
 from benchmark.utils import Print, BenchError, PathMaker
 
@@ -97,6 +100,10 @@ class LocalBench:
                 cmd = CommandMaker.generate_key(filename).split()
                 subprocess.run(cmd, check=True)
                 keys += [Key.from_file(filename)]
+
+            keys = place_adversaries_last(keys, self.faults)
+            for key, filename in zip(keys, key_files):
+                key.print(filename)
 
             names = [x.name for x in keys]
             committee = LocalCommittee(names, self.BASE_PORT, self.workers)

@@ -27,3 +27,7 @@ fab local
 兼容修改包括：将会触发 Ubuntu 24.04 bindgen panic 的 RocksDB 0.16 升至 API 兼容的 0.22；更新 Python 3.12 依赖；自动选择 clang/libclang；显式保留 INFO 性能日志；使用项目测试专属 tmux socket。
 
 本机验证结果（不同硬件不可直接横向比较）：End-to-end TPS 49,355，End-to-end latency 1,039 ms。
+
+## 敌手选择限制
+
+当 benchmark 的 `faults > 1` 时，故障集合默认由“第 2 轮 steady-state leader”加上“生成顺序最后的 `f-1` 个其他节点”组成。如果 leader 本身位于生成序列尾部，则向前补齐，保证总是 `f` 个不同敌手。`faults=0` 和 `faults=1` 保持原有的“最后 f 个节点不启动”行为。协议内的 round-robin leader 函数没有改变。

@@ -10,7 +10,10 @@ from math import ceil
 from copy import deepcopy
 import subprocess
 
-from benchmark.config import Committee, Key, NodeParameters, BenchParameters, ConfigError
+from benchmark.config import (
+    Committee, Key, NodeParameters, BenchParameters, ConfigError,
+    place_adversaries_last,
+)
 from benchmark.utils import BenchError, Print, PathMaker, progress_bar
 from benchmark.commands import CommandMaker
 from benchmark.logs import LogParser, ParseError
@@ -180,6 +183,10 @@ class Bench:
             cmd = CommandMaker.generate_key(filename).split()
             subprocess.run(cmd, check=True)
             keys += [Key.from_file(filename)]
+
+        keys = place_adversaries_last(keys, bench_parameters.faults)
+        for key, filename in zip(keys, key_files):
+            key.print(filename)
 
         names = [x.name for x in keys]
 
