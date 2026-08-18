@@ -14,8 +14,8 @@ case "$NODES" in 10|20|50) ;; *) echo "Usage: $0 <10|20|50> [seconds] [total-tps
 [[ "$ADVERSARY_SEED" =~ ^[0-9]+$ ]] || { echo "BULLSHARK_ADVERSARY_SEED must be a non-negative integer" >&2; exit 2; }
 case "$CLIENT_DURING_SILENCE" in send|pause) ;; *) echo "BULLSHARK_CLIENT_DURING_SILENCE must be send or pause" >&2; exit 2;; esac
 
-REMOTE_USER="${REMOTE_USER:-ubuntu}"
-REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/Bullshark-Ubuntu24}"
+REMOTE_USER="${REMOTE_USER:-root}"
+REMOTE_DIR="${REMOTE_DIR:-/root/Bullshark-Ubuntu24}"
 HOSTS_FILE="${HOSTS_FILE:-deploy/hosts-${NODES}.txt}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/bullshark-aws.pem}"
 MAX_PARALLEL="${MAX_PARALLEL:-10}"

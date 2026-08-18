@@ -8,8 +8,8 @@
 |---|---|
 | AMI | Ubuntu Server 24.04 LTS，x86_64 |
 | 节点数 | 10、20 或 50 |
-| 登录用户 | `ubuntu` |
-| 项目目录 | `/home/ubuntu/Bullshark-Ubuntu24` |
+| 登录用户 | `root` |
+| 项目目录 | `/root/Bullshark-Ubuntu24` |
 | 仓库 | `https://github.com/DrDaydream/Bullshark-Ubuntu24.git` |
 | 推荐实例 | 至少 4 vCPU / 16 GiB，50 节点建议 8 vCPU |
 | 磁盘 | 至少 30 GiB gp3 |
@@ -17,6 +17,8 @@
 | 网络 | 同一 Region、同一 VPC，建议同一 AZ |
 
 协议要求 `n >= 3f+1`。10/20/50 节点建议最大敌手数分别为 3、6、16。第一次先运行 10 节点、20 秒、10,000 总 TPS。50 节点前在 AWS Service Quotas 检查 On-Demand vCPU 配额。
+
+本文假设服务器已经允许 `root` 使用密钥直接 SSH。AWS 官方 Ubuntu AMI 通常默认禁用 root 直登；继续部署前必须先确认 `ssh -i KEY root@PUBLIC_IP` 成功，否则应在镜像层启用 root 登录或改用服务器实际允许的账户。
 
 ## 2. AWS 控制台和安全组
 
@@ -61,8 +63,8 @@ hosts 和 committee 均填写互相可达的 Private IPv4；node-0 必须能私�
 ~~~bash
 chmod 400 ~/Downloads/bullshark-aws.pem
 scp -i ~/Downloads/bullshark-aws.pem ~/Downloads/bullshark-aws.pem \
-  ubuntu@NODE0_PUBLIC_IP:/home/ubuntu/.ssh/bullshark-aws.pem
-ssh -i ~/Downloads/bullshark-aws.pem ubuntu@NODE0_PUBLIC_IP
+  root@NODE0_PUBLIC_IP:/root/.ssh/bullshark-aws.pem
+ssh -i ~/Downloads/bullshark-aws.pem root@NODE0_PUBLIC_IP
 ~~~
 
 进入 node-0 后：
@@ -76,8 +78,8 @@ nano ~/.ssh/config
 
 ~~~sshconfig
 Host 10.*
-    User ubuntu
-    IdentityFile /home/ubuntu/.ssh/bullshark-aws.pem
+    User root
+    IdentityFile /root/.ssh/bullshark-aws.pem
     StrictHostKeyChecking accept-new
     ConnectTimeout 8
     ServerAliveInterval 5
@@ -280,15 +282,15 @@ BULLSHARK_CLIENT_DURING_SILENCE=send \
 脚本默认读取：
 
 - `SSH_KEY=~/.ssh/bullshark-aws.pem`
-- `REMOTE_USER=ubuntu`
-- `REMOTE_DIR=/home/ubuntu/Bullshark-Ubuntu24`
+- `REMOTE_USER=root`
+- `REMOTE_DIR=/root/Bullshark-Ubuntu24`
 - `HOSTS_FILE=deploy/hosts-N.txt`
 
 可显式覆盖：
 
 ~~~bash
-SSH_KEY=/home/ubuntu/.ssh/bullshark-aws.pem \
-HOSTS_FILE=/home/ubuntu/Bullshark-Ubuntu24/deploy/hosts-10.txt \
+SSH_KEY=/root/.ssh/bullshark-aws.pem \
+HOSTS_FILE=/root/Bullshark-Ubuntu24/deploy/hosts-10.txt \
 ./run-multi-servers.sh 10 20 10000
 ~~~
 
