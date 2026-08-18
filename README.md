@@ -130,20 +130,20 @@ The following output was produced by a 4-node, 50,000 tx/s, 20-second local run:
  Max batch delay: 200 ms
 
  + RESULTS:
- Consensus TPS: 49,497 tx/s
- Consensus BPS: 25,342,247 B/s
- Consensus latency: 340 ms
+ Consensus TPS: 49,561 tx/s
+ Consensus BPS: 25,375,178 B/s
+ Consensus latency: 455 ms
 
- End-to-end TPS: 49,217 tx/s
- End-to-end BPS: 25,199,121 B/s
- End-to-end latency: 482 ms
- Leader commit latency: 112 ms
- Non-leader commit latency: 386 ms
- All committed headers latency: 340 ms
- Leader commit interval: 302 ms
- Non-leader rule-order latency: 386 ms
- Steady-state leader ratio: 100.00%
- Fallback leader ratio: 0.00%
+ End-to-end TPS: 49,236 tx/s
+ End-to-end BPS: 25,208,664 B/s
+ End-to-end latency: 598 ms
+ Leader commit latency: 203 ms
+ Non-leader commit latency: 484 ms
+ All committed headers latency: 452 ms
+ Leader commit interval: 445 ms
+ Non-leader rule-order latency: 484 ms
+ Steady-state leader ratio: 78.57%
+ Fallback leader ratio: 21.43%
  Fallback commit ratio: 0.00%
  Fallback skip ratio: 0.00%
 -----------------------------------------
