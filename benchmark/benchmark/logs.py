@@ -22,7 +22,7 @@ class LogParser:
 
         self.faults = faults
         if isinstance(faults, int):
-            self.committee_size = len(primaries) + int(faults)
+            self.committee_size = len(primaries)
             self.workers =  len(workers) // len(primaries)
         else:
             self.committee_size = '?'
@@ -44,13 +44,14 @@ class LogParser:
                 results = p.map(self._parse_primaries, primaries)
         except (ValueError, IndexError, AttributeError) as e:
             raise ParseError(f'Failed to parse nodes\' logs: {e}')
-        proposals, commits, header_proposals, header_commits, rule_orders, leader_paths, self.configs, primary_ips = zip(*results)
+        proposals, commits, header_proposals, header_commits, rule_orders, leader_paths, fallback_outcomes, self.configs, primary_ips = zip(*results)
         self.proposals = self._merge_results([x.items() for x in proposals])
         self.commits = self._merge_results([x.items() for x in commits])
         self.header_proposals = self._merge_results([x.items() for x in header_proposals])
         self.header_commits = self._merge_tagged_results(header_commits)
         self.rule_orders = self._merge_results([x.items() for x in rule_orders])
         self.leader_paths = self._merge_leader_paths(leader_paths)
+        self.fallback_outcomes = self._merge_leader_paths(fallback_outcomes)
 
         # Parse the workers logs.
         try:
@@ -142,6 +143,8 @@ class LogParser:
         ])
         tmp = findall(r'Leader path stats leader (\S+) path (steady|fallback)', log)
         leader_paths = dict(tmp)
+        tmp = findall(r'Fallback outcome round (\d+) outcome (commit|skip)', log)
+        fallback_outcomes = dict(tmp)
 
         configs = {
             'header_size': int(
@@ -169,7 +172,7 @@ class LogParser:
 
         ip = search(r'booted on (\d+.\d+.\d+.\d+)', log).group(1)
         
-        return proposals, commits, header_proposals, header_commits, rule_orders, leader_paths, configs, ip
+        return proposals, commits, header_proposals, header_commits, rule_orders, leader_paths, fallback_outcomes, configs, ip
 
     def _parse_workers(self, log):
         if search(r'(?:panic|Error)', log) is not None:
@@ -259,6 +262,15 @@ class LogParser:
             for path in ('steady', 'fallback')
         )
 
+    def _fallback_outcome_ratios(self):
+        total = len(self.fallback_outcomes)
+        if not total:
+            return 0, 0
+        return tuple(
+            100 * sum(value == outcome for value in self.fallback_outcomes.values()) / total
+            for outcome in ('commit', 'skip')
+        )
+
     def result(self):
         header_size = self.configs[0]['header_size']
         max_header_delay = self.configs[0]['max_header_delay']
@@ -276,6 +288,7 @@ class LogParser:
             value * 1_000 for value in self._header_latency_stats()
         )
         steady_ratio, fallback_ratio = self._leader_path_ratios()
+        fallback_commit_ratio, fallback_skip_ratio = self._fallback_outcome_ratios()
 
         return (
             '\n'
@@ -314,6 +327,8 @@ class LogParser:
             f' Non-leader rule-order latency: {round(rule_order_latency):,} ms\n'
             f' Steady-state leader ratio: {steady_ratio:.2f}%\n'
             f' Fallback leader ratio: {fallback_ratio:.2f}%\n'
+            f' Fallback commit ratio: {fallback_commit_ratio:.2f}%\n'
+            f' Fallback skip ratio: {fallback_skip_ratio:.2f}%\n'
             '-----------------------------------------\n'
         )
 

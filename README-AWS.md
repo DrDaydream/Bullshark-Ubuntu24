@@ -2,6 +2,8 @@
 
 每台 EC2 运行一个 Primary、一个 Worker 和一个 benchmark client；node-0 同时作为控制机。所有协议流量使用 AWS Private IPv4。
 
+`faults > 0` 时启用动态 wave 敌手，但全部 EC2 节点仍然启动。每个 wave 第一轮和第三轮的 steady leader 不允许触发提交；节点从第一轮的其他顶点中一致地选择伪随机 fallback leader。wave 末对其收集到 `2f+1` 因果支持则 commit，否则 skip。启动命令会自动传入 `BULLSHARK_FAULTS`，结果会附加 steady/fallback 以及 fallback commit/skip 比例。
+
 ## 1. AWS 控制台
 
 1. EC2 → Security Groups → Create security group，名称 `bullshark-sg`。

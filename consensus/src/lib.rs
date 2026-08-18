@@ -25,6 +25,8 @@ struct State {
     /// Keeps the latest committed certificate (and its parents) for every authority. Anything older
     /// must be regularly cleaned up through the function `update`.
     dag: Dag,
+    /// Fallback rounds already committed or skipped by the active scheduler.
+    resolved_fallback_rounds: HashSet<Round>,
 }
 
 impl State {
@@ -38,6 +40,7 @@ impl State {
             last_committed_round: 0,
             last_committed: genesis.iter().map(|(x, (_, y))| (*x, y.round())).collect(),
             dag: [(0, genesis)].iter().cloned().collect(),
+            resolved_fallback_rounds: HashSet::new(),
         }
     }
 
@@ -79,6 +82,13 @@ pub struct Consensus {
 }
 
 impl Consensus {
+    fn dynamic_adversary_enabled() -> bool {
+        std::env::var("BULLSHARK_FAULTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .map_or(false, |faults| faults > 0)
+    }
+
     pub fn spawn(
         committee: Committee,
         gc_depth: Round,
@@ -119,18 +129,61 @@ impl Consensus {
             // Try to order the dag to commit. Start from the previous round and check if it is a leader round.
             let r = round - 1;
 
-            // We only elect leaders for even round numbers.
-            if r % 2 != 0 || r < 2 {
-                continue;
-            }
+            let dynamic = Self::dynamic_adversary_enabled();
+            // Normal mode evaluates both steady leaders (wave rounds 1 and
+            // 3). Active-adversary mode waits until the end of wave round 3
+            // and evaluates the fallback selected from wave round 1.
+            let leader_round = if dynamic {
+                if round < 5 || round % 4 != 1 {
+                    continue;
+                }
+                round - 3
+            } else {
+                if r % 2 != 0 || r < 2 {
+                    continue;
+                }
+                r
+            };
 
             // Get the certificate's digest of the leader. If we already ordered this leader, there is nothing to do.
-            let leader_round = r;
             if leader_round <= state.last_committed_round {
                 continue;
             }
-            let (leader_digest, leader) = match self.leader(leader_round, &state.dag) {
+            if dynamic && state.resolved_fallback_rounds.contains(&leader_round) {
+                continue;
+            }
+
+            // The active adversary silences every steady leader. Wait until a
+            // quorum of the support round is visible, then resolve exactly one
+            // deterministic pseudo-random fallback candidate.
+            if dynamic {
+                let support_stake: Stake = state
+                    .dag
+                    .get(&round)
+                    .map(|certificates| {
+                        certificates
+                            .values()
+                            .map(|(_, certificate)| self.committee.stake(&certificate.origin()))
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                if support_stake < self.committee.quorum_threshold() {
+                    continue;
+                }
+            }
+            let selected = if dynamic {
+                self.fallback_leader(leader_round, &state.dag)
+            } else {
+                self.leader(leader_round, &state.dag)
+            };
+            let (leader_digest, leader) = match selected {
                 Some(x) => x,
+                None if dynamic => {
+                    state.resolved_fallback_rounds.insert(leader_round);
+                    #[cfg(feature = "benchmark")]
+                    info!("Fallback outcome round {} outcome skip", leader_round);
+                    continue;
+                }
                 None => continue,
             };
 
@@ -140,29 +193,57 @@ impl Consensus {
                 .get(&round)
                 .expect("We should have the whole history by now")
                 .values()
-                .filter(|(_, x)| x.header.parents.contains(leader_digest))
+                .filter(|(_, x)| {
+                    if dynamic {
+                        self.linked(x, leader, &state.dag)
+                    } else {
+                        x.header.parents.contains(leader_digest)
+                    }
+                })
                 .map(|(_, x)| self.committee.stake(&x.origin()))
                 .sum();
 
             // If it is the case, we can commit the leader. But first, we need to recursively go back to
             // the last committed leader, and commit all preceding leaders in the right order. Committing
             // a leader block means committing all its dependencies.
-            if stake < self.committee.validity_threshold() {
+            let required_support = if dynamic {
+                self.committee.quorum_threshold()
+            } else {
+                self.committee.validity_threshold()
+            };
+            if stake < required_support {
                 debug!("Leader {:?} does not have enough support", leader);
+                if dynamic {
+                    state.resolved_fallback_rounds.insert(leader_round);
+                    #[cfg(feature = "benchmark")]
+                    info!("Fallback outcome round {} outcome skip", leader_round);
+                }
                 continue;
+            }
+            if dynamic {
+                state.resolved_fallback_rounds.insert(leader_round);
+                #[cfg(feature = "benchmark")]
+                info!("Fallback outcome round {} outcome commit", leader_round);
             }
 
             // Get an ordered list of past leaders that are linked to the current leader.
             debug!("Leader {:?} has enough support", leader);
             let mut sequence = Vec::new();
             let trigger_digest = leader.digest();
-            let leaders_to_commit = self.order_leaders(leader, &state);
+            let trigger_header_digest = leader.header.digest();
+            let leaders_to_commit = if dynamic {
+                vec![leader.clone()]
+            } else {
+                self.order_leaders(leader, &state)
+            };
             for leader in leaders_to_commit.iter().rev() {
                 #[cfg(feature = "benchmark")]
                 info!(
                     "Leader path stats leader {:?} path {}",
                     leader.header.digest(),
-                    if leader.digest() == trigger_digest {
+                    if dynamic {
+                        "fallback"
+                    } else if leader.digest() == trigger_digest {
                         "steady"
                     } else {
                         "fallback"
@@ -188,8 +269,13 @@ impl Consensus {
             // Output the sequence in the right order.
             #[cfg(feature = "benchmark")]
             for certificate in &sequence {
-                let is_leader = certificate.round() % 2 == 0
-                    && certificate.origin() == self.committee.leader(certificate.round() as usize);
+                let is_leader = if dynamic {
+                    certificate.header.digest() == trigger_header_digest
+                } else {
+                    certificate.round() % 2 == 0
+                        && certificate.origin()
+                            == self.committee.leader(certificate.round() as usize)
+                };
                 if !is_leader {
                     info!(
                         "Header rule-ordered round {} digest {:?}",
@@ -207,9 +293,13 @@ impl Consensus {
                     "Header committed round {} digest {:?} leader {}",
                     certificate.round(),
                     certificate.header.digest(),
-                    certificate.round() % 2 == 0
-                        && certificate.origin()
-                            == self.committee.leader(certificate.round() as usize)
+                    if dynamic {
+                        certificate.header.digest() == trigger_header_digest
+                    } else {
+                        certificate.round() % 2 == 0
+                            && certificate.origin()
+                                == self.committee.leader(certificate.round() as usize)
+                    }
                 );
 
                 #[cfg(feature = "benchmark")]
@@ -241,11 +331,38 @@ impl Consensus {
         #[cfg(not(test))]
         let seed = round;
 
-        // Elect the leader.
+        // Elect the steady-state leader.
         let leader = self.committee.leader(seed as usize);
 
         // Return its certificate and the certificate's digest.
         dag.get(&round).map(|x| x.get(&leader)).flatten()
+    }
+
+    /// Select one common pseudo-random fallback from wave round 1, excluding
+    /// both steady leaders designated for wave rounds 1 and 3.
+    fn fallback_leader<'a>(
+        &self,
+        first_round: Round,
+        dag: &'a Dag,
+    ) -> Option<&'a (Digest, Certificate)> {
+        let first_steady = self.committee.leader(first_round as usize);
+        let third_steady = self.committee.leader((first_round + 2) as usize);
+        let candidates: Vec<_> = self
+            .committee
+            .authorities
+            .keys()
+            .filter(|authority| **authority != first_steady && **authority != third_steady)
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let wave = first_round.saturating_sub(2) / 4;
+        let mixed = wave
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add(wave.rotate_left(7));
+        let fallback = candidates[mixed as usize % candidates.len()];
+        dag.get(&first_round).and_then(|round| round.get(&fallback))
     }
 
     /// Order the past leaders that we didn't already commit.
