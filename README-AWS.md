@@ -2,7 +2,7 @@
 
 每台 EC2 运行一个 Primary、一个 Worker 和一个 benchmark client；node-0 同时作为控制机。所有协议流量使用 AWS Private IPv4。
 
-`faults > 0` 时启用动态 wave 敌手，但全部 EC2 节点仍然启动。每个 wave 第一轮和第三轮的 steady leader 不允许触发提交；节点从第一轮的其他顶点中一致地选择伪随机 fallback leader。wave 末对其收集到 `2f+1` 因果支持则 commit，否则 skip。启动命令会自动传入 `BULLSHARK_FAULTS`，结果会附加 steady/fallback 以及 fallback commit/skip 比例。
+`faults > 0` 时启用动态敌手，但全部 EC2 节点仍然启动。每轮根据 `BULLSHARK_ADVERSARY_SEED`、轮次和委员会确定性选出 `f` 个静默敌手；该轮 steady leader 必定入选，其余 `f-1` 个伪随机选择。静默节点不创建 Header，但仍接收消息。启动前为每个 Client 预生成墙钟静默时序表。`BULLSHARK_CLIENT_DURING_SILENCE=pause` 为默认模式，静默槽内 Client 不发交易且 Worker 暂停 batch；`send` 用于对照测试，保持 Client 和 batch 流量，但不恢复 Header。时间槽默认等于 `max_header_delay`，可用 `BULLSHARK_CLIENT_SILENCE_SLOT_MS` 覆盖。默认种子为 `0`。每个 wave 第一轮和第三轮的 steady leader 因而不可用；节点从第一轮的其他顶点中一致地选择 fallback leader。wave 末对其收集到 `2f+1` 因果支持则 commit，否则 skip。启动命令会自动传入 `BULLSHARK_FAULTS`、随机种子和 Client 静默模式，结果会附加 steady/fallback 以及 fallback commit/skip 比例。
 
 ## 1. AWS 控制台
 

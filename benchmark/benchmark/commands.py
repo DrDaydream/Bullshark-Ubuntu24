@@ -1,4 +1,5 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
+from os import environ
 from os.path import join
 
 from benchmark.utils import PathMaker
@@ -32,7 +33,21 @@ class CommandMaker:
         assert isinstance(parameters, str)
         assert isinstance(debug, bool)
         v = '-vvv' if debug else '-vv'
-        return (f'BULLSHARK_FAULTS={faults} ./node {v} run --keys {keys} --committee {committee} '
+        adversary_seed = environ.get('BULLSHARK_ADVERSARY_SEED', '0')
+        if (not adversary_seed.isascii() or not adversary_seed.isdigit()
+                or int(adversary_seed) > 2**64 - 1):
+            raise ValueError('BULLSHARK_ADVERSARY_SEED must be an unsigned 64-bit integer')
+        client_during_silence = environ.get(
+            'BULLSHARK_CLIENT_DURING_SILENCE', 'pause'
+        ).lower()
+        if client_during_silence not in {'send', 'pause'}:
+            raise ValueError(
+                'BULLSHARK_CLIENT_DURING_SILENCE must be send or pause'
+            )
+        return (f'BULLSHARK_FAULTS={faults} '
+                f'BULLSHARK_ADVERSARY_SEED={adversary_seed} '
+                f'BULLSHARK_CLIENT_DURING_SILENCE={client_during_silence} '
+                f'./node {v} run --keys {keys} --committee {committee} '
                 f'--store {store} --parameters {parameters} primary')
 
     @staticmethod
@@ -46,14 +61,23 @@ class CommandMaker:
                 f'--store {store} --parameters {parameters} worker --id {id}')
 
     @staticmethod
-    def run_client(address, size, rate, nodes):
+    def run_client(address, size, rate, nodes, silence_schedule='', silence_slot_ms=0):
         assert isinstance(address, str)
         assert isinstance(size, int) and size > 0
         assert isinstance(rate, int) and rate >= 0
         assert isinstance(nodes, list)
         assert all(isinstance(x, str) for x in nodes)
+        assert isinstance(silence_schedule, str)
+        assert all(value in {'0', '1'} for value in silence_schedule)
+        assert isinstance(silence_slot_ms, int) and silence_slot_ms >= 0
         nodes = f'--nodes {" ".join(nodes)}' if nodes else ''
-        return f'./benchmark_client {address} --size {size} --rate {rate} {nodes}'
+        silence = (
+            f'--silence-schedule {silence_schedule} '
+            f'--silence-slot-ms {silence_slot_ms}'
+            if silence_schedule else ''
+        )
+        return (f'./benchmark_client {address} --size {size} --rate {rate} '
+                f'{silence} {nodes}')
 
     @staticmethod
     def kill():

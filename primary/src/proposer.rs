@@ -1,13 +1,17 @@
 // Copyright(C) Facebook, Inc. and its affiliates.
+use crate::adversary;
 use crate::messages::{Certificate, Header};
-use crate::primary::Round;
+use crate::primary::{PrimaryWorkerMessage, Round};
+use bytes::Bytes;
 use config::{Committee, WorkerId};
 use crypto::Hash as _;
 use crypto::{Digest, PublicKey, SignatureService};
 #[cfg(feature = "benchmark")]
 use log::info;
 use log::{debug, log_enabled, warn};
+use network::{CancelHandler, ReliableSender};
 use std::cmp::Ordering;
+use std::net::SocketAddr;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::{sleep, Duration, Instant};
 
@@ -21,6 +25,22 @@ pub struct Proposer {
     name: PublicKey,
     /// The committee information.
     committee: Committee,
+    /// Authorities in the stable order used by the adversary schedule.
+    authorities: Vec<PublicKey>,
+    /// Number of dynamically silent authorities in each round.
+    adversary_faults: usize,
+    /// Makes the random adversary schedule reproducible.
+    adversary_seed: u64,
+    /// Round for which `silent` was computed.
+    silence_round: Round,
+    /// Cached decision for `silence_round`.
+    silent: bool,
+    /// Whether a silent authority also pauses local batch production.
+    pause_batches_during_silence: bool,
+    /// Local workers that must pause batch production with this proposer.
+    worker_addresses: Vec<SocketAddr>,
+    worker_network: ReliableSender,
+    worker_handlers: Vec<CancelHandler>,
     /// Service to sign headers.
     signature_service: SignatureService,
     /// The size of the headers' payload.
@@ -59,11 +79,45 @@ impl Proposer {
         rx_workers: Receiver<(Digest, WorkerId)>,
         tx_core: Sender<Header>,
     ) {
+        let authorities = committee.authorities.keys().cloned().collect();
+        let adversary_faults = std::env::var("BULLSHARK_FAULTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let adversary_seed = std::env::var("BULLSHARK_ADVERSARY_SEED")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let pause_batches_during_silence =
+            match std::env::var("BULLSHARK_CLIENT_DURING_SILENCE").as_deref() {
+                Ok("send") => false,
+                Ok("pause") | Err(std::env::VarError::NotPresent) => true,
+                Ok(value) => panic!(
+                    "BULLSHARK_CLIENT_DURING_SILENCE must be send or pause, got {}",
+                    value
+                ),
+                Err(error) => panic!("Invalid BULLSHARK_CLIENT_DURING_SILENCE: {}", error),
+            };
+        let worker_addresses = committee
+            .our_workers(&name)
+            .expect("Our public key or worker id is not in the committee")
+            .iter()
+            .map(|worker| worker.primary_to_worker)
+            .collect();
         let genesis = Certificate::genesis(&committee);
         tokio::spawn(async move {
             Self {
                 name,
                 committee,
+                authorities,
+                adversary_faults,
+                adversary_seed,
+                silence_round: Round::default(),
+                silent: false,
+                pause_batches_during_silence,
+                worker_addresses,
+                worker_network: ReliableSender::new(),
+                worker_handlers: Vec::new(),
                 signature_service,
                 header_size,
                 max_header_delay,
@@ -79,6 +133,33 @@ impl Proposer {
             .run()
             .await;
         });
+    }
+
+    fn compute_silence(&self, round: Round) -> bool {
+        let steady = self.committee.leader(round as usize);
+        adversary::selected(
+            &self.name,
+            &self.authorities,
+            round,
+            self.adversary_faults,
+            self.adversary_seed,
+            steady,
+        )
+    }
+
+    async fn prepare_round(&mut self, round: Round) {
+        self.silence_round = round;
+        self.silent = self.compute_silence(round);
+        if self.adversary_faults == 0 {
+            return;
+        }
+        let pause_batches = self.silent && self.pause_batches_during_silence;
+        let message = PrimaryWorkerMessage::BatchSilent(round, pause_batches);
+        let bytes = bincode::serialize(&message).expect("Failed to serialize batch state");
+        self.worker_handlers = self
+            .worker_network
+            .broadcast(self.worker_addresses.clone(), Bytes::from(bytes))
+            .await;
     }
 
     async fn make_header(&mut self) {
@@ -166,6 +247,7 @@ impl Proposer {
     pub async fn run(&mut self) {
         debug!("Dag starting at round {}", self.round);
         let mut advance = true;
+        self.prepare_round(self.round + 1).await;
 
         let timer = sleep(Duration::from_millis(self.max_header_delay));
         tokio::pin!(timer);
@@ -189,9 +271,17 @@ impl Proposer {
                 self.round += 1;
                 debug!("Dag moved to round {}", self.round);
 
-                // Make a new header.
-                self.make_header().await;
-                self.payload_size = 0;
+                if self.silence_round != self.round {
+                    self.prepare_round(self.round).await;
+                }
+                if self.silent {
+                    self.last_parents.clear();
+                    self.last_leader = None;
+                } else {
+                    // Make a new header.
+                    self.make_header().await;
+                    self.payload_size = 0;
+                }
 
                 // Reschedule the timer.
                 let deadline = Instant::now() + Duration::from_millis(self.max_header_delay);
@@ -207,6 +297,7 @@ impl Proposer {
                             // late (or just joined the network).
                             self.round = round;
                             self.last_parents = parents;
+                            self.prepare_round(round).await;
                         },
                         Ordering::Less => {
                             // Ignore parents from older rounds.
