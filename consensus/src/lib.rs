@@ -155,7 +155,19 @@ impl Consensus {
             // Get an ordered list of past leaders that are linked to the current leader.
             debug!("Leader {:?} has enough support", leader);
             let mut sequence = Vec::new();
-            for leader in self.order_leaders(leader, &state).iter().rev() {
+            let trigger_digest = leader.digest();
+            let leaders_to_commit = self.order_leaders(leader, &state);
+            for leader in leaders_to_commit.iter().rev() {
+                #[cfg(feature = "benchmark")]
+                info!(
+                    "Leader path stats leader {:?} path {}",
+                    leader.header.digest(),
+                    if leader.digest() == trigger_digest {
+                        "steady"
+                    } else {
+                        "fallback"
+                    }
+                );
                 // Starting from the oldest leader, flatten the sub-dag referenced by the leader.
                 for x in self.order_dag(leader, &state) {
                     // Update and clean up internal state.
@@ -174,9 +186,31 @@ impl Consensus {
             }
 
             // Output the sequence in the right order.
+            #[cfg(feature = "benchmark")]
+            for certificate in &sequence {
+                let is_leader = certificate.round() % 2 == 0
+                    && certificate.origin() == self.committee.leader(certificate.round() as usize);
+                if !is_leader {
+                    info!(
+                        "Header rule-ordered round {} digest {:?}",
+                        certificate.round(),
+                        certificate.header.digest()
+                    );
+                }
+            }
             for certificate in sequence {
                 #[cfg(not(feature = "benchmark"))]
                 info!("Committed {}", certificate.header);
+
+                #[cfg(feature = "benchmark")]
+                info!(
+                    "Header committed round {} digest {:?} leader {}",
+                    certificate.round(),
+                    certificate.header.digest(),
+                    certificate.round() % 2 == 0
+                        && certificate.origin()
+                            == self.committee.leader(certificate.round() as usize)
+                );
 
                 #[cfg(feature = "benchmark")]
                 for digest in certificate.header.payload.keys() {

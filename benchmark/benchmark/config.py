@@ -29,18 +29,19 @@ def place_adversaries_last(keys, faults):
     """Place one steady-state leader plus f-1 generated tail nodes last."""
     assert isinstance(keys, list) and all(isinstance(x, Key) for x in keys)
     assert isinstance(faults, int) and 0 <= faults < len(keys)
-    if faults <= 1:
+    if faults == 0:
         return keys
 
     by_name = {key.name: key for key in keys}
     sorted_names = sorted(by_name)
     steady_leader = sorted_names[2 % len(sorted_names)]
     generated_tail = []
-    for key in reversed(keys):
-        if key.name != steady_leader:
-            generated_tail.append(key.name)
-            if len(generated_tail) == faults - 1:
-                break
+    if faults > 1:
+        for key in reversed(keys):
+            if key.name != steady_leader:
+                generated_tail.append(key.name)
+                if len(generated_tail) == faults - 1:
+                    break
     unavailable = [steady_leader] + list(reversed(generated_tail))
 
     unavailable_set = set(unavailable)
