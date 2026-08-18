@@ -45,7 +45,7 @@ Edit `benchmark/fabfile.py` to configure the local run:
 
 ~~~python
 bench_params = {
-    'faults': 1,
+    'faults': 0,
     'nodes': 4,
     'workers': 1,
     'rate': 50_000,
@@ -98,9 +98,60 @@ With `faults > 0`, every round selects exactly f adversarial authorities. The ro
 
 When a steady leader is unavailable, Bullshark selects a common fallback leader. A fallback requires `2f+1` causal support to commit; otherwise it is counted as skipped. The final report separates steady-state leaders, fallback leaders, fallback commits, and fallback skips.
 
-### Example output
+### No-adversary baseline (`faults = 0`)
 
-This is an actual result parsed from the repository's current 4-node, 1-fault, 20-second local benchmark logs:
+Set `'faults': 0` in `benchmark/fabfile.py` and run:
+
+~~~bash
+RUST_LOG=info fab local
+~~~
+
+The following output was produced by a 4-node, 50,000 tx/s, 20-second local run:
+
+~~~text
+-----------------------------------------
+ SUMMARY:
+-----------------------------------------
+ + CONFIG:
+ Faults: 0 node(s)
+ Committee size: 4 node(s)
+ Worker(s) per node: 1 worker(s)
+ Collocate primary and workers: True
+ Input rate: 50,000 tx/s
+ Transaction size: 512 B
+ Execution time: 20 s
+
+ Header size: 1,000 B
+ Max header delay: 200 ms
+ GC depth: 50 round(s)
+ Sync retry delay: 10,000 ms
+ Sync retry nodes: 3 node(s)
+ batch size: 500,000 B
+ Max batch delay: 200 ms
+
+ + RESULTS:
+ Consensus TPS: 49,497 tx/s
+ Consensus BPS: 25,342,247 B/s
+ Consensus latency: 340 ms
+
+ End-to-end TPS: 49,217 tx/s
+ End-to-end BPS: 25,199,121 B/s
+ End-to-end latency: 482 ms
+ Leader commit latency: 112 ms
+ Non-leader commit latency: 386 ms
+ All committed headers latency: 340 ms
+ Leader commit interval: 302 ms
+ Non-leader rule-order latency: 386 ms
+ Steady-state leader ratio: 100.00%
+ Fallback leader ratio: 0.00%
+ Fallback commit ratio: 0.00%
+ Fallback skip ratio: 0.00%
+-----------------------------------------
+~~~
+
+### Preserved adversarial result (`faults = 1`)
+
+For comparison, this is the previously recorded 4-node, 1-fault, 20-second local result using the adversary commands above:
 
 ~~~text
 -----------------------------------------
