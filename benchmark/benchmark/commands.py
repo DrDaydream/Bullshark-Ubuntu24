@@ -29,12 +29,18 @@ class CommandMaker:
         return f'./node generate_keys --filename {filename}'
 
     @staticmethod
-    def run_primary(keys, committee, store, parameters, debug=False, faults=0):
+    def run_primary(keys, committee, store, parameters, debug=False, faults=0,
+                    adversary_config=None):
         assert isinstance(keys, str)
         assert isinstance(committee, str)
         assert isinstance(parameters, str)
         assert isinstance(debug, bool)
         v = '-vvv' if debug else '-vv'
+        cmd = (f'./node {v} run --keys {keys} --committee {committee} '
+               f'--store {store} --parameters {parameters} primary')
+        if adversary_config is not None:
+            return (f'BULLSHARK_FAULTS=0 BULLSHARK_ADVERSARY_SEED=0 '
+                    f'BULLSHARK_CLIENT_DURING_SILENCE=pause {cmd}')
         adversary_seed = environ.get('BULLSHARK_ADVERSARY_SEED', '0')
         if (not adversary_seed.isascii() or not adversary_seed.isdigit()
                 or int(adversary_seed) > 2**64 - 1):
@@ -48,9 +54,7 @@ class CommandMaker:
             )
         return (f'BULLSHARK_FAULTS={faults} '
                 f'BULLSHARK_ADVERSARY_SEED={adversary_seed} '
-                f'BULLSHARK_CLIENT_DURING_SILENCE={client_during_silence} '
-                f'./node {v} run --keys {keys} --committee {committee} '
-                f'--store {store} --parameters {parameters} primary')
+                f'BULLSHARK_CLIENT_DURING_SILENCE={client_during_silence} {cmd}')
 
     @staticmethod
     def run_worker(keys, committee, store, parameters, id, debug=False):

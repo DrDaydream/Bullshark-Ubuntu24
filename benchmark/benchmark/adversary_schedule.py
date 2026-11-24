@@ -9,6 +9,13 @@ from os import environ
 DOMAIN = b'narwhal-dynamic-adversary-v1'
 
 
+def client_schedule_for_run(names, faults, duration, max_header_delay, explicit_mode):
+    if explicit_mode:
+        return dict.fromkeys(names, ''), 0
+    slot_ms = client_silence_slot_ms(max_header_delay)
+    return build_client_schedules(names, faults, duration, slot_ms), slot_ms
+
+
 def client_silence_slot_ms(default):
     value = int(environ.get('BULLSHARK_CLIENT_SILENCE_SLOT_MS', str(default)))
     if value <= 0:

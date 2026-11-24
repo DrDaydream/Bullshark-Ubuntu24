@@ -7,7 +7,8 @@ from tempfile import mkdtemp
 from time import sleep
 
 from benchmark.commands import CommandMaker
-from benchmark.adversary_schedule import build_client_schedules, client_silence_slot_ms
+from benchmark.adversary import active_launch_ids, resolve_adversary, validate_adversary, write_run_snapshot
+from benchmark.adversary_schedule import client_schedule_for_run
 from benchmark.config import (
     Key, LocalCommittee, NodeParameters, BenchParameters, ConfigError,
     place_adversaries_last,
@@ -23,8 +24,12 @@ class LocalBench:
         try:
             self.bench_parameters = BenchParameters(bench_parameters_dict)
             self.node_parameters = NodeParameters(node_parameters_dict)
-        except ConfigError as e:
+            self.adversary = validate_adversary(
+                bench_parameters_dict.get('adversary'), self.bench_parameters.nodes, self.bench_parameters.faults
+            )
+        except (ConfigError, ValueError) as e:
             raise BenchError('Invalid nodes or bench parameters', e)
+        self.benchmark_input = bench_parameters_dict
         self.tmux_dir = mkdtemp(prefix='bullshark-benchmark-tmux-')
 
     def __getattr__(self, attr):
@@ -112,22 +117,30 @@ class LocalBench:
 
             self.node_parameters.print(PathMaker.parameters_file())
 
+            config = resolve_adversary(self.adversary, names)
+            active = active_launch_ids(nodes, config)
+            if config is not None:
+                snapshot = write_run_snapshot(
+                    PathMaker.results_path(), self.benchmark_input, self.node_parameters.json,
+                    names, config, nodes, rate, 1, protocol='bullshark-local',
+                )
+                Print.info(f'Benchmark configuration: {snapshot}')
+
             # Run the clients (they will wait for the nodes to be ready).
             workers_addresses = committee.workers_addresses(0)
+            ready = [addr for i in active for _, addr in workers_addresses[i]]
             rate_share = ceil(rate / committee.workers())
-            silence_slot_ms = client_silence_slot_ms(
-                self.node_parameters.json['max_header_delay']
+            silence_schedules, silence_slot_ms = client_schedule_for_run(
+                names, self.faults, self.duration, self.node_parameters.json['max_header_delay'],
+                explicit_mode=config is not None,
             )
-            silence_schedules = build_client_schedules(
-                names, self.faults, self.duration, silence_slot_ms
-            )
-            for i, addresses in enumerate(workers_addresses):
-                for (id, address) in addresses:
+            for i in active:
+                for (id, address) in workers_addresses[i]:
                     cmd = CommandMaker.run_client(
                         address,
                         self.tx_size,
                         rate_share,
-                        [x for y in workers_addresses for _, x in y],
+                        ready,
                         silence_schedules[names[i]],
                         silence_slot_ms,
                     )
@@ -135,21 +148,21 @@ class LocalBench:
                     self._background_run(cmd, log_file)
 
             # Run the primaries (except the faulty ones).
-            for i, address in enumerate(committee.primary_addresses(0)):
+            for i in active:
                 cmd = CommandMaker.run_primary(
                     PathMaker.key_file(i),
                     PathMaker.committee_file(),
                     PathMaker.db_path(i),
                     PathMaker.parameters_file(),
                     debug=debug,
-                    faults=self.faults
+                    faults=self.faults, adversary_config=config,
                 )
                 log_file = PathMaker.primary_log_file(i)
                 self._background_run(cmd, log_file)
 
             # Run the workers (except the faulty ones).
-            for i, addresses in enumerate(workers_addresses):
-                for (id, address) in addresses:
+            for i in active:
+                for (id, address) in workers_addresses[i]:
                     cmd = CommandMaker.run_worker(
                         PathMaker.key_file(i),
                         PathMaker.committee_file(),
@@ -168,7 +181,8 @@ class LocalBench:
 
             # Parse logs and return the parser.
             Print.info('Parsing logs...')
-            return LogParser.process(PathMaker.logs_path(), faults=self.faults)
+            return LogParser.process(PathMaker.logs_path(), faults=self.faults,
+                                     adversary=config, committee_size=nodes)
 
         except (subprocess.SubprocessError, ParseError) as e:
             self._kill_nodes()

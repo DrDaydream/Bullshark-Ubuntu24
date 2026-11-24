@@ -1,11 +1,14 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
 from datetime import datetime
 from glob import glob
+from json import dumps
 from multiprocessing import Pool
 from os.path import join
+from pathlib import Path
 from re import findall, search
 from statistics import mean
 
+from benchmark.adversary import crash_population
 from benchmark.utils import Print
 
 
@@ -360,15 +363,25 @@ class LogParser:
             f.write(self.result())
 
     @classmethod
-    def process(cls, directory, faults=0):
+    def process(cls, directory, faults=0, adversary=None, committee_size=None):
         assert isinstance(directory, str)
+
+        primary_files = sorted(Path(directory).glob('primary-*.log'))
+        population_path = Path(directory) / 'measurement-population.json'
+        population = None
+        if (adversary and adversary.get('fault_model') == 'crash-stop') or population_path.exists():
+            try:
+                primary_ids = sorted(int(path.stem.split('-', 1)[1]) for path in primary_files)
+                population = crash_population(directory, primary_ids, adversary, committee_size)
+            except (ValueError, OSError, KeyError, TypeError) as e:
+                raise ParseError(f'Invalid crash population: {e}') from e
 
         clients = []
         for filename in sorted(glob(join(directory, 'client-*.log'))):
             with open(filename, 'r') as f:
                 clients += [f.read()]
         primaries = []
-        for filename in sorted(glob(join(directory, 'primary-*.log'))):
+        for filename in primary_files:
             with open(filename, 'r') as f:
                 primaries += [f.read()]
         workers = []
@@ -376,4 +389,13 @@ class LogParser:
             with open(filename, 'r') as f:
                 workers += [f.read()]
 
-        return cls(clients, primaries, workers, faults=faults)
+        parser = cls(clients, primaries, workers, faults=faults)
+        if population is not None:
+            parser.faults = len(population['crashed_primary_ids'])
+            parser.committee_size = population['committee_size']
+            parser.workers = len(workers) // len(primaries)
+            if adversary is not None:
+                temporary = population_path.with_suffix('.json.tmp')
+                temporary.write_text(dumps(population, indent=2) + '\n', encoding='utf-8')
+                temporary.replace(population_path)
+        return parser

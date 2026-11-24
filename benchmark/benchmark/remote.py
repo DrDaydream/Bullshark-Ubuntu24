@@ -4,7 +4,7 @@ from fabric import Connection, ThreadingGroup as Group
 from fabric.exceptions import GroupException
 from paramiko import RSAKey
 from paramiko.ssh_exception import PasswordRequiredException, SSHException
-from os.path import basename, splitext
+from os.path import basename, dirname, splitext
 from time import sleep
 from math import ceil
 from copy import deepcopy
@@ -16,7 +16,8 @@ from benchmark.config import (
 )
 from benchmark.utils import BenchError, Print, PathMaker, progress_bar
 from benchmark.commands import CommandMaker
-from benchmark.adversary_schedule import build_client_schedules, client_silence_slot_ms
+from benchmark.adversary import active_launch_ids, resolve_adversary, validate_adversary, write_run_snapshot
+from benchmark.adversary_schedule import client_schedule_for_run
 from benchmark.logs import LogParser, ParseError
 from benchmark.instance import InstanceManager
 
@@ -217,57 +218,57 @@ class Bench:
 
         return committee
 
-    def _run_single(self, rate, committee, bench_parameters, node_parameters, debug=False):
+    def _run_single(self, rate, committee, bench_parameters, node_parameters, debug=False,
+                    adversary_config=None):
         faults = bench_parameters.faults
+        active = active_launch_ids(committee.size(), adversary_config)
 
         # Kill any potentially unfinished run and delete logs.
         hosts = committee.ips()
         self.kill(hosts=hosts, delete_logs=True)
 
-        # Run clients for every worker; dynamically silent workers apply backpressure.
+        # Each active worker keeps its share of the full committee's target input.
         Print.info('Booting clients...')
         workers_addresses = committee.workers_addresses(0)
+        ready = [addr for i in active for _, addr in workers_addresses[i]]
         rate_share = ceil(rate / committee.workers())
         names = list(committee.json['authorities'])
-        silence_slot_ms = client_silence_slot_ms(
-            node_parameters.json['max_header_delay']
+        silence_schedules, silence_slot_ms = client_schedule_for_run(
+            names, faults, bench_parameters.duration, node_parameters.json['max_header_delay'],
+            explicit_mode=adversary_config is not None,
         )
-        silence_schedules = build_client_schedules(
-            names, faults, bench_parameters.duration, silence_slot_ms
-        )
-        for i, addresses in enumerate(workers_addresses):
-            for (id, address) in addresses:
+        for i in active:
+            for (id, address) in workers_addresses[i]:
                 host = Committee.ip(address)
                 cmd = CommandMaker.run_client(
                     address,
                     bench_parameters.tx_size,
                     rate_share,
-                    [x for y in workers_addresses for _, x in y],
+                    ready,
                     silence_schedules[names[i]],
                     silence_slot_ms,
                 )
                 log_file = PathMaker.client_log_file(i, id)
                 self._background_run(host, cmd, log_file)
 
-        # Run every primary; adversarial authorities are selected per round.
         Print.info('Booting primaries...')
-        for i, address in enumerate(committee.primary_addresses(0)):
-            host = Committee.ip(address)
+        primary_addresses = committee.primary_addresses(0)
+        for i in active:
+            host = Committee.ip(primary_addresses[i])
             cmd = CommandMaker.run_primary(
                 PathMaker.key_file(i),
                 PathMaker.committee_file(),
                 PathMaker.db_path(i),
                 PathMaker.parameters_file(),
                 debug=debug,
-                faults=faults
+                faults=faults, adversary_config=adversary_config,
             )
             log_file = PathMaker.primary_log_file(i)
             self._background_run(host, cmd, log_file)
 
-        # Run every worker; batch production is paused dynamically.
         Print.info('Booting workers...')
-        for i, addresses in enumerate(workers_addresses):
-            for (id, address) in addresses:
+        for i in active:
+            for (id, address) in workers_addresses[i]:
                 host = Committee.ip(address)
                 cmd = CommandMaker.run_worker(
                     PathMaker.key_file(i),
@@ -286,16 +287,16 @@ class Bench:
             sleep(ceil(duration / 20))
         self.kill(hosts=hosts, delete_logs=False)
 
-    def _logs(self, committee, faults):
+    def _logs(self, committee, faults, adversary=None):
+        active = active_launch_ids(committee.size(), adversary)
         # Delete local logs (if any).
         cmd = CommandMaker.clean_logs()
         subprocess.run([cmd], shell=True, stderr=subprocess.DEVNULL)
 
         # Download log files.
         workers_addresses = committee.workers_addresses(0)
-        progress = progress_bar(workers_addresses, prefix='Downloading workers logs:')
-        for i, addresses in enumerate(progress):
-            for id, address in addresses:
+        for i in progress_bar(active, prefix='Downloading workers logs:'):
+            for id, address in workers_addresses[i]:
                 host = Committee.ip(address)
                 c = Connection(host, user='ubuntu', connect_kwargs=self.connect)
                 c.get(
@@ -308,9 +309,8 @@ class Bench:
                 )
 
         primary_addresses = committee.primary_addresses(0)
-        progress = progress_bar(primary_addresses, prefix='Downloading primaries logs:')
-        for i, address in enumerate(progress):
-            host = Committee.ip(address)
+        for i in progress_bar(active, prefix='Downloading primaries logs:'):
+            host = Committee.ip(primary_addresses[i])
             c = Connection(host, user='ubuntu', connect_kwargs=self.connect)
             c.get(
                 PathMaker.primary_log_file(i), 
@@ -319,7 +319,8 @@ class Bench:
 
         # Parse logs and return the parser.
         Print.info('Parsing logs and computing performance...')
-        return LogParser.process(PathMaker.logs_path(), faults=faults)
+        return LogParser.process(PathMaker.logs_path(), faults=faults, adversary=adversary,
+                                 committee_size=committee.size())
 
     def run(self, bench_parameters_dict, node_parameters_dict, debug=False):
         assert isinstance(debug, bool)
@@ -327,7 +328,9 @@ class Bench:
         try:
             bench_parameters = BenchParameters(bench_parameters_dict)
             node_parameters = NodeParameters(node_parameters_dict)
-        except ConfigError as e:
+            adversary = validate_adversary(bench_parameters_dict.get('adversary'),
+                                           bench_parameters.nodes, bench_parameters.faults)
+        except (ConfigError, ValueError) as e:
             raise BenchError('Invalid nodes or bench parameters', e)
 
         # Select which hosts to use.
@@ -357,27 +360,40 @@ class Bench:
             committee_copy = deepcopy(committee)
             committee_copy.remove_nodes(committee.size() - n)
 
+            if adversary is not None and len(set(bench_parameters.nodes)) > 1:
+                # _config uploaded the largest committee. Every peer in this run needs the selected one.
+                filename = PathMaker.committee_file()
+                committee_copy.print(filename)
+                for host in committee_copy.ips():
+                    Connection(host, user='ubuntu', connect_kwargs=self.connect).put(filename, '.')
+            names = list(committee_copy.json['authorities'])
+            config = resolve_adversary(adversary, names)
+
             for r in bench_parameters.rate:
                 Print.heading(f'\nRunning {n} nodes (input rate: {r:,} tx/s)')
+                result_file = PathMaker.result_file(
+                    bench_parameters.faults, n, bench_parameters.workers, bench_parameters.collocate,
+                    r, bench_parameters.tx_size, adversary=config,
+                )
 
                 # Run the benchmark.
                 for i in range(bench_parameters.runs):
                     Print.heading(f'Run {i+1}/{bench_parameters.runs}')
                     try:
+                        if config is not None:
+                            snapshot = write_run_snapshot(
+                                dirname(result_file), bench_parameters_dict, node_parameters_dict,
+                                names, config, n, r, i + 1, protocol='bullshark',
+                            )
+                            Print.info(f'Benchmark configuration: {snapshot}')
                         self._run_single(
-                            r, committee_copy, bench_parameters, node_parameters, debug
+                            r, committee_copy, bench_parameters, node_parameters, debug,
+                            adversary_config=config,
                         )
 
                         faults = bench_parameters.faults
-                        logger = self._logs(committee_copy, faults)
-                        logger.print(PathMaker.result_file(
-                            faults,
-                            n, 
-                            bench_parameters.workers,
-                            bench_parameters.collocate,
-                            r, 
-                            bench_parameters.tx_size, 
-                        ))
+                        logger = self._logs(committee_copy, faults, config)
+                        logger.print(result_file)
                     except (subprocess.SubprocessError, GroupException, ParseError) as e:
                         self.kill(hosts=selected_hosts)
                         if isinstance(e, GroupException):

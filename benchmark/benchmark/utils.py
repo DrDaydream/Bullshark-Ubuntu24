@@ -65,9 +65,17 @@ class PathMaker:
         return 'results'
 
     @staticmethod
-    def result_file(faults, nodes, workers, collocate, rate, tx_size):
+    def result_file(faults, nodes, workers, collocate, rate, tx_size, adversary=None):
+        directory = PathMaker.results_path()
+        if adversary is not None:
+            group = 'A0'
+            if adversary.get('fault_model') == 'crash-stop':
+                ids = sorted(adversary['byzantine_ids'])
+                group = 'A1-ids-' + '-'.join(str(i) for i in ids)
+                faults = len(ids)
+            directory = join(directory, group)
         return join(
-            PathMaker.results_path(),
+            directory,
             f'bench-{faults}-{nodes}-{workers}-{collocate}-{rate}-{tx_size}.txt'
         )
 

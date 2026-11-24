@@ -1,6 +1,12 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
 from fabric import task
+from invoke import Exit
+import json
+from dataclasses import asdict
+from pathlib import Path
 
+from benchmark.adversary import launch_parameters
+from benchmark.adversary_sim import Event, simulate
 from benchmark.local import LocalBench
 from benchmark.logs import ParseError, LogParser
 from benchmark.utils import Print
@@ -9,8 +15,11 @@ from benchmark.instance import InstanceManager
 from benchmark.remote import Bench, BenchError
 
 
-@task
-def local(ctx, debug=True):
+@task(help={'adversary': 'A0: all processes running. A1: full-run crash-stop.',
+            'byzantine': 'Number of trailing authority IDs to omit for A1.',
+            'byzantine-ids': 'Comma-separated launch IDs to omit for A1.'})
+def local(ctx, debug=True, adversary='', byzantine=0, byzantine_ids='',
+          nodes=None, rate=None, duration=None, faults=None):
     ''' Run benchmarks on localhost '''
     bench_params = {
         'faults': 0,
@@ -30,10 +39,31 @@ def local(ctx, debug=True):
         'max_batch_delay': 200  # ms
     }
     try:
+        bench_params = launch_parameters(bench_params, adversary=adversary, byzantine=byzantine,
+                                         byzantine_ids=byzantine_ids, nodes=nodes, rate=rate,
+                                         duration=duration, faults=faults)
+        for field in ('nodes', 'rate'):
+            if isinstance(bench_params[field], list) and len(bench_params[field]) != 1:
+                raise ValueError(f'Local benchmarks accept one value for {field}')
+    except ValueError as e:
+        raise Exit(str(e), code=2) from e
+    try:
         ret = LocalBench(bench_params, node_params).run(debug)
         print(ret.result())
     except BenchError as e:
         Print.error(e)
+
+
+@task
+def replay(ctx, trace):
+    ''' Replay a JSON fixture of synthetic A3/A5 events in virtual time. '''
+    try:
+        fixture = json.loads(Path(trace).read_text(encoding='utf-8'))
+        events = [Event(**event) for event in fixture['events']]
+        deliveries = simulate(events, **fixture['settings'])
+    except (OSError, UnicodeError, KeyError, TypeError, ValueError) as e:
+        raise Exit(f'Invalid replay fixture: {e}', code=2) from e
+    print(json.dumps([asdict(row) for row in deliveries], indent=2))
 
 
 @task
@@ -90,8 +120,11 @@ def install(ctx):
         Print.error(e)
 
 
-@task
-def remote(ctx, debug=False):
+@task(help={'adversary': 'A0: all processes running. A1: full-run crash-stop.',
+            'byzantine': 'Number of trailing authority IDs to omit for A1.',
+            'byzantine-ids': 'Comma-separated launch IDs to omit for A1.'})
+def remote(ctx, debug=False, adversary='', byzantine=0, byzantine_ids='',
+           nodes=None, rate=None, duration=None, faults=None, runs=None):
     ''' Run benchmarks on AWS '''
     bench_params = {
         'faults': 0,
@@ -112,6 +145,12 @@ def remote(ctx, debug=False):
         'batch_size': 500_000,  # bytes
         'max_batch_delay': 200  # ms
     }
+    try:
+        bench_params = launch_parameters(bench_params, adversary=adversary, byzantine=byzantine,
+                                         byzantine_ids=byzantine_ids, nodes=nodes, rate=rate,
+                                         duration=duration, faults=faults, runs=runs)
+    except ValueError as e:
+        raise Exit(str(e), code=2) from e
     try:
         Bench(ctx).run(bench_params, node_params, debug)
     except BenchError as e:
