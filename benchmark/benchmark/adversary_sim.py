@@ -69,7 +69,14 @@ def simulate(events, *, mode, nodes, faulty_ids, delayed_receivers=None, seed=1,
     _integer('seed', seed, 0)
     if seed >= 2**64:
         raise ValueError('seed must fit in 64 bits')
-    faulty_ids = {_node_id(node, nodes) for node in faulty_ids}
+    if start_round + rounds >= 2**64:
+        raise ValueError('round window must fit in 64 bits')
+    if delay_ms > 86_400_000:
+        raise ValueError('delay_ms must be at most 86400000')
+    selected = [_node_id(node, nodes) for node in faulty_ids]
+    faulty_ids = set(selected)
+    if len(faulty_ids) != len(selected):
+        raise ValueError('faulty_ids must be distinct')
     if len(faulty_ids) > (nodes - 1) // 3 or (mode == 'A3' and not faulty_ids):
         raise ValueError('Supply a valid fault set for this committee and mode')
     if delayed_receivers is not None:

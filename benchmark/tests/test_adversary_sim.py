@@ -44,6 +44,16 @@ class AdversarySimulationTests(unittest.TestCase):
         self.assertEqual(self.run_events([replace(self.event, round=100)], rounds=0),
                          [Delivery(0, 10, 'delayed')])
 
+    def test_orca_configuration_limits(self):
+        maximum = (1 << 64) - 1
+        for options in ({'start_round': maximum, 'rounds': 1},
+                        {'start_round': maximum + 1, 'rounds': 0},
+                        {'delay_ms': 86_400_001}, {'faulty_ids': [1, 1]}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.run_events([], **options)
+        self.assertEqual(self.run_events([], start_round=maximum, rounds=0,
+                                         delay_ms=86_400_000), [])
+
     def test_seed_selects_the_same_half_of_honest_receivers_in_a_round(self):
         events = [replace(self.event, receiver=i) for i in range(4)]
         rows = self.run_events(events, delayed_receivers=None, seed=7)
