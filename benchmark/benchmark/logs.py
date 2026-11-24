@@ -8,7 +8,7 @@ from pathlib import Path
 from re import findall, search
 from statistics import mean
 
-from benchmark.adversary import crash_population
+from benchmark.adversary import measurement_population
 from benchmark.utils import Print
 
 
@@ -39,6 +39,7 @@ class LogParser:
         assert all(x for x in inputs)
 
         self.faults = faults
+        self.proposal_mode = None
         if isinstance(faults, int):
             self.committee_size = len(primaries)
             self.workers =  len(workers) // len(primaries)
@@ -314,6 +315,8 @@ class LogParser:
         )
         steady_ratio, fallback_ratio = self._leader_path_ratios()
         fallback_commit_ratio, fallback_skip_ratio = self._fallback_outcome_ratios()
+        proposal_info = (f' Local proposal mode: {self.proposal_mode}\n'
+                         f' Active authorities: {self.committee_size}\n') if self.proposal_mode else ''
 
         return (
             '\n'
@@ -323,6 +326,7 @@ class LogParser:
             ' + CONFIG:\n'
             f' Faults: {self.faults} node(s)\n'
             f' Committee size: {self.committee_size} node(s)\n'
+            f'{proposal_info}'
             f' Worker(s) per node: {self.workers} worker(s)\n'
             f' Collocate primary and workers: {self.collocate}\n'
             f' Input rate: {sum(self.rate):,} tx/s\n'
@@ -369,12 +373,12 @@ class LogParser:
         primary_files = sorted(Path(directory).glob('primary-*.log'))
         population_path = Path(directory) / 'measurement-population.json'
         population = None
-        if (adversary and adversary.get('fault_model') == 'crash-stop') or population_path.exists():
+        if (adversary and adversary.get('fault_model') in ('crash-stop', 'local-proposal')) or population_path.exists():
             try:
                 primary_ids = sorted(int(path.stem.split('-', 1)[1]) for path in primary_files)
-                population = crash_population(directory, primary_ids, adversary, committee_size)
+                population = measurement_population(directory, primary_ids, adversary, committee_size)
             except (ValueError, OSError, KeyError, TypeError) as e:
-                raise ParseError(f'Invalid crash population: {e}') from e
+                raise ParseError(f'Invalid measurement population: {e}') from e
 
         clients = []
         for filename in sorted(glob(join(directory, 'client-*.log'))):
@@ -391,6 +395,7 @@ class LogParser:
 
         parser = cls(clients, primaries, workers, faults=faults)
         if population is not None:
+            parser.proposal_mode = population.get('mode')
             parser.faults = len(population['crashed_primary_ids'])
             parser.committee_size = population['committee_size']
             parser.workers = len(workers) // len(primaries)

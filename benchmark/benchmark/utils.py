@@ -73,6 +73,11 @@ class PathMaker:
                 ids = sorted(adversary['byzantine_ids'])
                 group = 'A1-ids-' + '-'.join(str(i) for i in ids)
                 faults = len(ids)
+            elif adversary.get('fault_model') == 'local-proposal':
+                group = (f"{adversary['mode']}-local-proposal-seed-{adversary['seed']}"
+                         f"-delay-{adversary['delay_ms']}ms")
+                if adversary['mode'] == 'A3':
+                    group += '-ids-' + '-'.join(str(i) for i in sorted(adversary['delayed_launch_ids']))
             directory = join(directory, group)
         return join(
             directory,

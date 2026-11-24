@@ -11,6 +11,8 @@ mod helper;
 mod messages;
 mod payload_receiver;
 mod primary;
+#[cfg(feature = "benchmark")]
+mod proposal_profile;
 mod proposer;
 mod synchronizer;
 

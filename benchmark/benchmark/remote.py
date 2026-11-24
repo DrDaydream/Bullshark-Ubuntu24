@@ -5,6 +5,7 @@ from fabric.exceptions import GroupException
 from paramiko import RSAKey
 from paramiko.ssh_exception import PasswordRequiredException, SSHException
 from os.path import basename, dirname, splitext
+from shlex import quote
 from time import sleep
 from math import ceil
 from copy import deepcopy
@@ -136,7 +137,8 @@ class Bench:
 
     def _background_run(self, host, command, log_file):
         name = splitext(basename(log_file))[0]
-        cmd = f'tmux new -d -s "{name}" "{command} |& tee {log_file}"'
+        pipeline = f'{command} |& tee {quote(log_file)}'
+        cmd = f'tmux new -d -s {quote(name)} {quote(pipeline)}'
         c = Connection(host, user='ubuntu', connect_kwargs=self.connect)
         output = c.run(cmd, hide=True)
         self._check_stderr(output)
@@ -261,7 +263,7 @@ class Bench:
                 PathMaker.db_path(i),
                 PathMaker.parameters_file(),
                 debug=debug,
-                faults=faults, adversary_config=adversary_config,
+                faults=faults, adversary_config=adversary_config, launch_id=i,
             )
             log_file = PathMaker.primary_log_file(i)
             self._background_run(host, cmd, log_file)

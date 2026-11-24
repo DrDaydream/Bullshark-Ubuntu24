@@ -155,7 +155,7 @@ class LocalBench:
                     PathMaker.db_path(i),
                     PathMaker.parameters_file(),
                     debug=debug,
-                    faults=self.faults, adversary_config=config,
+                    faults=self.faults, adversary_config=config, launch_id=i,
                 )
                 log_file = PathMaker.primary_log_file(i)
                 self._background_run(cmd, log_file)

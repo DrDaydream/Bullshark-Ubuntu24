@@ -15,11 +15,18 @@ from benchmark.instance import InstanceManager
 from benchmark.remote import Bench, BenchError
 
 
-@task(help={'adversary': 'A0: all processes running. A1: full-run crash-stop.',
-            'byzantine': 'Number of trailing authority IDs to omit for A1.',
-            'byzantine-ids': 'Comma-separated launch IDs to omit for A1.'})
-def local(ctx, debug=True, adversary='', byzantine=0, byzantine_ids='',
-          nodes=None, rate=None, duration=None, faults=None):
+MODE_HELP = {
+    'adversary': 'A0: unmodified. A1: crash-stop. A3/A5: seeded own-proposal delay and alternating regular leader omission.',
+    'byzantine': 'A1: trailing authorities to omit. A3: number of delayed proposers (default (n-1)//3).',
+    'byzantine-ids': 'Comma-separated launch IDs to omit (A1) or delay (A3).',
+    'seed': 'A3/A5 proposal timing seed; also selects the A3 subset (default 1).',
+    'delay-ms': 'A3/A5 maximum local proposal delay in milliseconds, inclusive (default 200).',
+}
+
+
+@task(help=MODE_HELP)
+def local(ctx, debug=True, adversary='', byzantine=None, byzantine_ids='',
+          nodes=None, rate=None, duration=None, faults=None, seed=None, delay_ms=None):
     ''' Run benchmarks on localhost '''
     bench_params = {
         'faults': 0,
@@ -41,7 +48,7 @@ def local(ctx, debug=True, adversary='', byzantine=0, byzantine_ids='',
     try:
         bench_params = launch_parameters(bench_params, adversary=adversary, byzantine=byzantine,
                                          byzantine_ids=byzantine_ids, nodes=nodes, rate=rate,
-                                         duration=duration, faults=faults)
+                                         duration=duration, faults=faults, seed=seed, delay_ms=delay_ms)
         for field in ('nodes', 'rate'):
             if isinstance(bench_params[field], list) and len(bench_params[field]) != 1:
                 raise ValueError(f'Local benchmarks accept one value for {field}')
@@ -120,11 +127,9 @@ def install(ctx):
         Print.error(e)
 
 
-@task(help={'adversary': 'A0: all processes running. A1: full-run crash-stop.',
-            'byzantine': 'Number of trailing authority IDs to omit for A1.',
-            'byzantine-ids': 'Comma-separated launch IDs to omit for A1.'})
-def remote(ctx, debug=False, adversary='', byzantine=0, byzantine_ids='',
-           nodes=None, rate=None, duration=None, faults=None, runs=None):
+@task(help=MODE_HELP)
+def remote(ctx, debug=False, adversary='', byzantine=None, byzantine_ids='',
+           nodes=None, rate=None, duration=None, faults=None, runs=None, seed=None, delay_ms=None):
     ''' Run benchmarks on AWS '''
     bench_params = {
         'faults': 0,
@@ -148,7 +153,7 @@ def remote(ctx, debug=False, adversary='', byzantine=0, byzantine_ids='',
     try:
         bench_params = launch_parameters(bench_params, adversary=adversary, byzantine=byzantine,
                                          byzantine_ids=byzantine_ids, nodes=nodes, rate=rate,
-                                         duration=duration, faults=faults, runs=runs)
+                                         duration=duration, faults=faults, runs=runs, seed=seed, delay_ms=delay_ms)
     except ValueError as e:
         raise Exit(str(e), code=2) from e
     try:

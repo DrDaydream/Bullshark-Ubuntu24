@@ -2,6 +2,8 @@
 use crate::adversary;
 use crate::messages::{Certificate, Header};
 use crate::primary::{PrimaryWorkerMessage, Round};
+#[cfg(feature = "benchmark")]
+use crate::proposal_profile::{Action, ProposalProfile};
 use bytes::Bytes;
 use config::{Committee, WorkerId};
 use crypto::Hash as _;
@@ -31,6 +33,8 @@ pub struct Proposer {
     adversary_faults: usize,
     /// Makes the random adversary schedule reproducible.
     adversary_seed: u64,
+    #[cfg(feature = "benchmark")]
+    proposal_profile: Option<ProposalProfile>,
     /// Round for which `silent` was computed.
     silence_round: Round,
     /// Cached decision for `silence_round`.
@@ -105,6 +109,8 @@ impl Proposer {
             .map(|worker| worker.primary_to_worker)
             .collect();
         let genesis = Certificate::genesis(&committee);
+        #[cfg(feature = "benchmark")]
+        let proposal_profile = ProposalProfile::from_env(committee.size(), adversary_faults);
         tokio::spawn(async move {
             Self {
                 name,
@@ -112,6 +118,8 @@ impl Proposer {
                 authorities,
                 adversary_faults,
                 adversary_seed,
+                #[cfg(feature = "benchmark")]
+                proposal_profile,
                 silence_round: Round::default(),
                 silent: false,
                 pause_batches_during_silence,
@@ -247,6 +255,8 @@ impl Proposer {
     pub async fn run(&mut self) {
         debug!("Dag starting at round {}", self.round);
         let mut advance = true;
+        #[cfg(feature = "benchmark")]
+        let mut waiting_for_profile = false;
         self.prepare_round(self.round + 1).await;
 
         let timer = sleep(Duration::from_millis(self.max_header_delay));
@@ -262,9 +272,47 @@ impl Proposer {
             let enough_digests = self.payload_size >= self.header_size;
             let timer_expired = timer.is_elapsed();
 
-            if (timer_expired || (enough_digests && advance)) && enough_parents {
-                if timer_expired {
-                    warn!("Timer expired for round {}", self.round);
+            let eligible = (timer_expired || (enough_digests && advance)) && enough_parents;
+            let header_timeout = timer_expired && eligible;
+            #[cfg(feature = "benchmark")]
+            let header_timeout = header_timeout && !waiting_for_profile;
+            if header_timeout {
+                warn!("Timer expired for round {}", self.round);
+            }
+            #[cfg(not(feature = "benchmark"))]
+            let omit = false;
+            #[cfg(feature = "benchmark")]
+            let (eligible, omit) = if waiting_for_profile {
+                (timer_expired && enough_parents, false)
+            } else if let Some(profile) = self.proposal_profile.as_ref().filter(|_| eligible) {
+                let next = self.round + 1;
+                match profile.action(next, || self.committee.leader(next as usize) == self.name) {
+                    Action::Omit => {
+                        info!(
+                            "BENCH_PROPOSAL_PROFILE mode={:?} launch_id={} round={} action=omit",
+                            profile.mode, profile.launch_id, next
+                        );
+                        (true, true)
+                    }
+                    Action::Wait(ms) => {
+                        // Keep consuming batch digests and newer parents during the local delay.
+                        debug!("BENCH_PROPOSAL_PROFILE mode={:?} launch_id={} round={} action=delay delay_ms={}", profile.mode, profile.launch_id, next, ms);
+                        timer
+                            .as_mut()
+                            .reset(Instant::now() + Duration::from_millis(ms));
+                        waiting_for_profile = true;
+                        (false, false)
+                    }
+                    Action::Propose => (true, false),
+                }
+            } else {
+                (eligible, false)
+            };
+
+            if eligible {
+                #[cfg(feature = "benchmark")]
+                {
+                    waiting_for_profile = false;
                 }
 
                 // Advance to the next round.
@@ -274,7 +322,7 @@ impl Proposer {
                 if self.silence_round != self.round {
                     self.prepare_round(self.round).await;
                 }
-                if self.silent {
+                if self.silent || omit {
                     self.last_parents.clear();
                     self.last_leader = None;
                 } else {
@@ -297,6 +345,12 @@ impl Proposer {
                             // late (or just joined the network).
                             self.round = round;
                             self.last_parents = parents;
+                            // Newer parents supersede a delayed local proposal. Keep its payload.
+                            #[cfg(feature = "benchmark")]
+                            if waiting_for_profile {
+                                waiting_for_profile = false;
+                                timer.as_mut().reset(Instant::now() + Duration::from_millis(self.max_header_delay));
+                            }
                             self.prepare_round(round).await;
                         },
                         Ordering::Less => {

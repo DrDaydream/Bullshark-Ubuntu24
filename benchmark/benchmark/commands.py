@@ -1,6 +1,8 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
+import json
 from os import environ
 from os.path import join
+from shlex import quote
 
 from benchmark.utils import PathMaker
 
@@ -30,7 +32,7 @@ class CommandMaker:
 
     @staticmethod
     def run_primary(keys, committee, store, parameters, debug=False, faults=0,
-                    adversary_config=None):
+                    adversary_config=None, launch_id=None):
         assert isinstance(keys, str)
         assert isinstance(committee, str)
         assert isinstance(parameters, str)
@@ -38,6 +40,15 @@ class CommandMaker:
         v = '-vvv' if debug else '-vv'
         cmd = (f'./node {v} run --keys {keys} --committee {committee} '
                f'--store {store} --parameters {parameters} primary')
+        if adversary_config and adversary_config.get('fault_model') == 'local-proposal':
+            if type(launch_id) is not int or launch_id < 0:
+                raise ValueError('A proposal profile requires the primary launch ID')
+            profile = {k: adversary_config[k] for k in ('mode', 'seed', 'delay_ms')}
+            profile.update(launch_id=launch_id, delayed=launch_id in adversary_config['delayed_launch_ids'])
+            encoded = quote(json.dumps(profile, separators=(',', ':')))
+            cmd = f'BULLSHARK_BENCH_PROPOSAL_PROFILE={encoded} {cmd}'
+        else:
+            cmd = f'env -u BULLSHARK_BENCH_PROPOSAL_PROFILE {cmd}'
         if adversary_config is not None:
             return (f'BULLSHARK_FAULTS=0 BULLSHARK_ADVERSARY_SEED=0 '
                     f'BULLSHARK_CLIENT_DURING_SILENCE=pause {cmd}')
